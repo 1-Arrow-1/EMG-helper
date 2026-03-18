@@ -46,7 +46,7 @@ def generate_random_values(range_vars):
 
 
 def read_config_values(config_path):
-    """Read current numeric values for the supported parameters from config.ini."""
+    """Read current numeric values for any supported parameters found in config.ini."""
     with open(config_path, "r", encoding="utf-8") as config_file:
         content = config_file.read()
 
@@ -57,9 +57,8 @@ def read_config_values(config_path):
             re.MULTILINE,
         )
         match = pattern.search(content)
-        if not match:
-            raise ValueError(f"Parameter not found in config.ini: {parameter}")
-        values[parameter] = int(match.group(1))
+        if match:
+            values[parameter] = int(match.group(1))
 
     return values
 
@@ -72,7 +71,8 @@ def update_config_file(config_path, values):
     with open(config_path, "r", encoding="utf-8") as config_file:
         content = config_file.read()
 
-    found_parameters = set()
+    changed_parameters = []
+    skipped_parameters = []
 
     for parameter, new_value in values.items():
         pattern = re.compile(
@@ -81,18 +81,20 @@ def update_config_file(config_path, values):
         )
 
         def replace_match(match):
-            found_parameters.add(parameter)
+            changed_parameters.append(parameter)
             return f"{match.group(1)}{new_value}{match.group(3)}"
 
-        content = pattern.sub(replace_match, content, count=1)
+        updated_content, replacements = pattern.subn(replace_match, content, count=1)
+        if replacements == 0:
+            skipped_parameters.append(parameter)
+        else:
+            content = updated_content
 
-    missing_parameters = [parameter for parameter in PARAMETERS if parameter not in found_parameters]
-    if missing_parameters:
-        missing_list = ", ".join(missing_parameters)
-        raise ValueError(f"Parameter not found in config.ini: {missing_list}")
+    if changed_parameters:
+        with open(config_path, "w", encoding="utf-8") as config_file:
+            config_file.write(content)
 
-    with open(config_path, "w", encoding="utf-8") as config_file:
-        config_file.write(content)
+    return changed_parameters, skipped_parameters
 
 
 def sync_range(low_var, high_var, changed_bound):
@@ -117,11 +119,6 @@ def refresh_value_labels(display_mode_var, value_labels):
 
     try:
         config_values = read_config_values(config_path)
-    except ValueError as error:
-        for value_label in value_labels.values():
-            value_label.config(text="")
-        messagebox.showerror("Error", str(error))
-        return
     except OSError as error:
         for value_label in value_labels.values():
             value_label.config(text="")
@@ -130,10 +127,32 @@ def refresh_value_labels(display_mode_var, value_labels):
 
     if display_mode_var.get() == "show":
         for parameter, value_label in value_labels.items():
-            value_label.config(text=f"Current: {config_values[parameter]}")
+            if parameter in config_values:
+                value_label.config(text=f"Current: {config_values[parameter]}")
+            else:
+                value_label.config(text="Not found")
     else:
         for value_label in value_labels.values():
             value_label.config(text="")
+
+
+def build_update_summary(changed_parameters, skipped_parameters):
+    """Create a concise result message without exposing generated values."""
+    summary_lines = []
+
+    if changed_parameters:
+        changed_list = ", ".join(changed_parameters)
+        summary_lines.append(f"Updated: {changed_list}")
+    else:
+        summary_lines.append("Updated: none")
+
+    if skipped_parameters:
+        skipped_list = ", ".join(skipped_parameters)
+        summary_lines.append(f"Skipped (not found): {skipped_list}")
+    else:
+        summary_lines.append("Skipped (not found): none")
+
+    return "\n".join(summary_lines)
 
 
 def handle_generate_and_update(range_vars, display_mode_var, value_labels):
@@ -146,14 +165,13 @@ def handle_generate_and_update(range_vars, display_mode_var, value_labels):
 
     try:
         values = generate_random_values(range_vars)
-        update_config_file(config_path, values)
+        changed_parameters, skipped_parameters = update_config_file(config_path, values)
         refresh_value_labels(display_mode_var, value_labels)
-    except ValueError as error:
-        messagebox.showerror("Error", str(error))
     except OSError as error:
         messagebox.showerror("Error", f"Failed to update config.ini: {error}")
     else:
-        messagebox.showinfo("Success", "config.ini updated successfully")
+        summary_message = build_update_summary(changed_parameters, skipped_parameters)
+        messagebox.showinfo("Success", summary_message)
 
 
 def create_tick_marks(parent, scale_widget):
