@@ -12,11 +12,10 @@ RANGE_PARAMETERS = [
     "escort_plane_count_allied",
     "lead_plane_count_axis",
     "escort_plane_count_axis",
-]
-SINGLE_VALUE_PARAMETERS = [
     "plane_altitude_allied",
     "plane_altitude_axis",
 ]
+SINGLE_VALUE_PARAMETERS = []
 MISSION_TIME_OPTIONS = [
     "dawn",
     "early morning",
@@ -26,7 +25,6 @@ MISSION_TIME_OPTIONS = [
     "late afternoon",
     "dusk",
     "midnight",
-    "random",
 ]
 MISSION_CLOUD_OPTIONS = [
     "clear skies",
@@ -40,7 +38,6 @@ MISSION_CLOUD_OPTIONS = [
     "high clouds",
     "high cloud cover",
     "cirrus clouds",
-    "random",
 ]
 SEASONAL_MISSION_TIME_OPTIONS = {
     "winter": ["late morning", "noon", "early afternoon"],
@@ -52,7 +49,6 @@ SEASONAL_MISSION_TIME_OPTIONS = {
         "late afternoon",
     ],
 }
-RANDOM_OPTION = "random"
 PARAMETER_SPECS = {
     "ai_planes_count": {"min": 0, "max": 24, "step": 1, "color_style": "Result.TLabel"},
     "lead_plane_count_allied": {"min": 0, "max": 12, "step": 1, "color_style": "Allied.TLabel"},
@@ -75,6 +71,18 @@ PARAMETER_SPECS = {
 EXCLUDED_RANDOM_VALUES = {
     "lead_plane_count_axis": {3},
     "escort_plane_count_axis": {3},
+}
+TOOLTIP_TEXTS = {
+    "ai_planes_count": "Choose the min and max range for AI plane groups. Higher values can create much larger missions.",
+    "lead_plane_count_allied": "Choose the min and max range for allied lead aircraft.",
+    "escort_plane_count_allied": "Choose the min and max range for allied escort aircraft.",
+    "plane_altitude_allied": "Choose the min and max altitude range for allied aircraft in metres.",
+    "lead_plane_count_axis": "Choose the min and max range for axis lead aircraft. Value 3 is excluded automatically.",
+    "escort_plane_count_axis": "Choose the min and max range for axis escort aircraft. Value 3 is excluded automatically.",
+    "plane_altitude_axis": "Choose the min and max altitude range for axis aircraft in metres.",
+    "mission_time": "Select one or more mission times. Click once to choose a single value. Use Ctrl+click to select multiple values. One of the selected entries will be used randomly, unless seasonal random is enabled.",
+    "mission_cloud": "Select one or more cloud presets. Click once to choose a single value. Use Ctrl+click to select multiple values. One of the selected entries will be used randomly.",
+    "seasonal_mission_time": "Uses the mission date from config.ini to determine the season automatically. Winter is 01.10 to 31.03. Summer is 01.04 to 30.09. Then one value is randomly selected from the matching subset. Winter: late morning, noon, early afternoon. Summer: early morning, late morning, noon, early afternoon, late afternoon.",
 }
 
 
@@ -179,20 +187,11 @@ def generate_random_values(range_vars):
     }
 
 
-def collect_single_values(single_value_vars):
-    """Collect direct slider values for single-value parameters."""
-    return {
-        parameter: value_var.get()
-        for parameter, value_var in single_value_vars.items()
-    }
-
-
-def generate_dropdown_value(selected_value, available_options):
-    """Resolve a dropdown selection, including random mode."""
-    if selected_value == RANDOM_OPTION:
-        choices = [option for option in available_options if option != RANDOM_OPTION]
-        return random.choice(choices)
-    return selected_value
+def generate_subset_random_value(selected_values, field_name):
+    """Pick one random value from the user's selected subset."""
+    if not selected_values:
+        raise ValueError(f"Select at least one option for {field_name}.")
+    return random.choice(selected_values)
 
 
 def get_mission_time_season(config_path):
@@ -222,12 +221,12 @@ def get_mission_time_season(config_path):
     return "winter"
 
 
-def generate_mission_time(config_path, selected_value, seasonal_mode):
+def generate_mission_time(config_path, selected_values, seasonal_mode):
     """Generate mission_time either from dropdown mode or seasonal random mode."""
     if seasonal_mode:
         season = get_mission_time_season(config_path)
         return random.choice(SEASONAL_MISSION_TIME_OPTIONS[season])
-    return generate_dropdown_value(selected_value, MISSION_TIME_OPTIONS)
+    return generate_subset_random_value(selected_values, "mission_time")
 
 
 def meters_to_feet(meters):
@@ -235,14 +234,17 @@ def meters_to_feet(meters):
     return round(meters * 3.28084)
 
 
-def format_altitude_label(meters):
-    """Format altitude as metres with feet below."""
-    return f"{meters} m / {meters_to_feet(meters)} ft"
-
-
 def format_range_label(min_value, max_value):
     """Format a visible min/max indicator for range sliders."""
     return f"{min_value} - {max_value}"
+
+
+def format_altitude_range_label(min_value, max_value):
+    """Format an altitude range in metres and feet for display."""
+    return (
+        f"{min_value}-{max_value} m / "
+        f"{meters_to_feet(min_value)}-{meters_to_feet(max_value)} ft"
+    )
 
 
 def snap_value(value, min_value, max_value, step):
@@ -279,6 +281,12 @@ def update_current_value_labels(display_mode_var, value_labels):
             value_label.config(text="")
 
 
+def resize_window_to_content(root):
+    """Resize the window to the current content size."""
+    root.update_idletasks()
+    root.geometry("")
+
+
 def build_update_summary(changed_parameters, skipped_parameters):
     """Create a concise result message without exposing generated values."""
     summary_lines = []
@@ -298,12 +306,12 @@ def build_update_summary(changed_parameters, skipped_parameters):
 
 def handle_generate_and_update(
     range_vars,
-    single_value_vars,
-    mission_time_var,
-    mission_cloud_var,
+    mission_time_listbox,
+    mission_cloud_listbox,
     seasonal_mission_time_var,
     display_mode_var,
     value_labels,
+    root,
 ):
     """Generate hidden random values and write them into config.ini."""
     config_path = get_config_path()
@@ -314,18 +322,18 @@ def handle_generate_and_update(
 
     try:
         values = generate_random_values(range_vars)
-        values.update(collect_single_values(single_value_vars))
         values["mission_time"] = generate_mission_time(
             config_path,
-            mission_time_var.get(),
+            get_listbox_selected_values(mission_time_listbox),
             seasonal_mission_time_var.get(),
         )
-        values["mission_cloud"] = generate_dropdown_value(
-            mission_cloud_var.get(),
-            MISSION_CLOUD_OPTIONS,
+        values["mission_cloud"] = generate_subset_random_value(
+            get_listbox_selected_values(mission_cloud_listbox),
+            "mission_cloud",
         )
         changed_parameters, skipped_parameters = update_config_file(config_path, values)
         update_current_value_labels(display_mode_var, value_labels)
+        resize_window_to_content(root)
     except ValueError as error:
         messagebox.showerror("Error", str(error))
     except OSError as error:
@@ -351,6 +359,18 @@ def create_styles(root):
     style.configure("Muted.TLabel", foreground="#475467")
     style.configure("Value.TLabel", font=("Segoe UI", 9, "bold"))
     style.configure("Primary.TButton", padding=(14, 8))
+    style.configure("Help.TLabel", foreground="#667085")
+    style.configure("ValueBox.TFrame", relief="solid", borderwidth=1)
+
+
+def create_value_box(parent, row_index, value_labels, parameter_name):
+    """Create a framed area for the current config value display."""
+    value_frame = ttk.Frame(parent, style="ValueBox.TFrame", padding=(8, 4))
+    value_frame.grid(row=row_index, column=4, sticky="w")
+
+    value_label = ttk.Label(value_frame, text="", style="Muted.TLabel", width=22)
+    value_label.grid(row=0, column=0, sticky="w")
+    value_labels[parameter_name] = value_label
 
 
 def create_labeled_section(parent, title, row):
@@ -363,6 +383,64 @@ def create_labeled_section(parent, title, row):
     return section
 
 
+class ToolTip:
+    """Simple hover tooltip for small help labels."""
+
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        widget.bind("<Enter>", self.show)
+        widget.bind("<Leave>", self.hide)
+
+    def show(self, _event=None):
+        if self.tooltip_window or not self.text:
+            return
+
+        x_position = self.widget.winfo_rootx() + 18
+        y_position = self.widget.winfo_rooty() + 20
+
+        self.tooltip_window = tk.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.wm_geometry(f"+{x_position}+{y_position}")
+
+        tooltip_label = tk.Label(
+            self.tooltip_window,
+            text=self.text,
+            justify="left",
+            bg="#fff8db",
+            fg="#101828",
+            relief="solid",
+            bd=1,
+            padx=8,
+            pady=5,
+            wraplength=280,
+        )
+        tooltip_label.pack()
+
+    def hide(self, _event=None):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
+
+def create_parameter_heading(parent, row_index, text, style_name, tooltip_text, sticky="w"):
+    """Create a label plus a compact hover help control."""
+    heading_frame = ttk.Frame(parent)
+    heading_frame.grid(row=row_index, column=0, sticky=sticky, padx=(0, 10), pady=6)
+
+    ttk.Label(
+        heading_frame,
+        text=text,
+        style=style_name,
+        width=26,
+    ).grid(row=0, column=0, sticky="w")
+
+    help_label = ttk.Label(heading_frame, text="[?]", style="Help.TLabel", cursor="question_arrow")
+    help_label.grid(row=0, column=1, sticky="w", padx=(4, 0))
+    ToolTip(help_label, tooltip_text)
+
+
 def create_range_row(parent, row_index, parameter_name, range_vars, value_labels):
     """Create a ttk-based min/max slider row with live range labels."""
     spec = PARAMETER_SPECS[parameter_name]
@@ -370,12 +448,13 @@ def create_range_row(parent, row_index, parameter_name, range_vars, value_labels
     max_var = tk.IntVar(value=spec["max"])
     range_vars[parameter_name] = (min_var, max_var)
 
-    ttk.Label(
+    create_parameter_heading(
         parent,
-        text=parameter_name,
-        style=spec["color_style"],
-        width=26,
-    ).grid(row=row_index, column=0, sticky="w", padx=(0, 10), pady=6)
+        row_index,
+        parameter_name,
+        spec["color_style"],
+        TOOLTIP_TEXTS[parameter_name],
+    )
 
     slider_frame = ttk.Frame(parent)
     slider_frame.grid(row=row_index, column=1, columnspan=2, sticky="ew")
@@ -406,18 +485,22 @@ def create_range_row(parent, row_index, parameter_name, range_vars, value_labels
     )
     max_scale.grid(row=2, column=1, sticky="ew", padx=(8, 0))
 
-    range_label = ttk.Label(parent, text=format_range_label(min_var.get(), max_var.get()), style="Value.TLabel")
+    formatter = (
+        format_altitude_range_label
+        if parameter_name in {"plane_altitude_allied", "plane_altitude_axis"}
+        else format_range_label
+    )
+
+    range_label = ttk.Label(parent, text=formatter(min_var.get(), max_var.get()), style="Value.TLabel")
     range_label.grid(row=row_index, column=3, sticky="w", padx=(10, 10))
 
-    current_label = ttk.Label(parent, text="", style="Muted.TLabel", width=22)
-    current_label.grid(row=row_index, column=4, sticky="w")
-    value_labels[parameter_name] = current_label
+    create_value_box(parent, row_index, value_labels, parameter_name)
     is_adjusting = {"value": False}
 
     def refresh_labels():
         min_value_label.config(text=str(min_var.get()))
         max_value_label.config(text=str(max_var.get()))
-        range_label.config(text=format_range_label(min_var.get(), max_var.get()))
+        range_label.config(text=formatter(min_var.get(), max_var.get()))
 
     def on_min_change(raw_value):
         if is_adjusting["value"]:
@@ -455,122 +538,121 @@ def create_range_row(parent, row_index, parameter_name, range_vars, value_labels
     max_scale.set(max_var.get())
 
 
-def create_single_value_row(parent, row_index, parameter_name, single_value_vars, value_labels):
-    """Create a ttk-based single slider row with live value feedback."""
-    spec = PARAMETER_SPECS[parameter_name]
-    value_var = tk.IntVar(value=spec["min"])
-    single_value_vars[parameter_name] = value_var
-
-    ttk.Label(
-        parent,
-        text=parameter_name,
-        style=spec["color_style"],
-        width=26,
-    ).grid(row=row_index, column=0, sticky="w", padx=(0, 10), pady=6)
-
-    slider = ttk.Scale(
-        parent,
-        from_=spec["min"],
-        to=spec["max"],
-    )
-    slider.grid(row=row_index, column=1, columnspan=2, sticky="ew")
-
-    value_label = ttk.Label(parent, text=format_altitude_label(value_var.get()), style="Value.TLabel", width=18)
-    value_label.grid(row=row_index, column=3, sticky="w", padx=(10, 10))
-
-    current_label = ttk.Label(parent, text="", style="Muted.TLabel", width=22)
-    current_label.grid(row=row_index, column=4, sticky="w")
-    value_labels[parameter_name] = current_label
-    is_adjusting = {"value": False}
-
-    def on_change(raw_value):
-        if is_adjusting["value"]:
-            return
-        snapped = snap_value(raw_value, spec["min"], spec["max"], spec["step"])
-        is_adjusting["value"] = True
-        try:
-            value_var.set(snapped)
-            slider.set(snapped)
-            value_label.config(text=format_altitude_label(snapped))
-        finally:
-            is_adjusting["value"] = False
-
-    slider.configure(command=on_change)
-    slider.set(value_var.get())
+def get_listbox_selected_values(listbox):
+    """Return selected listbox values in display order."""
+    return [
+        listbox.get(index)
+        for index in range(listbox.size())
+        if listbox.selection_includes(index)
+    ]
 
 
-def update_mission_time_mode(seasonal_var, mission_time_combo):
-    """Enable or disable the mission_time dropdown based on seasonal mode."""
-    mission_time_combo.configure(state="disabled" if seasonal_var.get() else "readonly")
+def bind_listbox_selection_behavior(listbox):
+    """Make normal click exclusive and Ctrl+click additive for listboxes."""
+
+    def on_click(event):
+        clicked_index = listbox.nearest(event.y)
+        if clicked_index < 0:
+            return "break"
+
+        is_ctrl_click = bool(event.state & 0x0004)
+        if is_ctrl_click:
+            if listbox.selection_includes(clicked_index):
+                listbox.selection_clear(clicked_index)
+            else:
+                listbox.selection_set(clicked_index)
+            listbox.activate(clicked_index)
+            return "break"
+
+        listbox.selection_clear(0, tk.END)
+        listbox.selection_set(clicked_index)
+        listbox.activate(clicked_index)
+        return "break"
+
+    listbox.bind("<Button-1>", on_click)
+
+
+def update_mission_time_mode(seasonal_var, mission_time_listbox):
+    """Enable or disable mission_time subset selection based on seasonal mode."""
+    state = "disabled" if seasonal_var.get() else "normal"
+    mission_time_listbox.configure(state=state)
 
 
 def create_mission_time_row(parent, row_index, value_labels):
-    """Create the mission_time controls with dropdown and seasonal toggle."""
-    ttk.Label(parent, text="mission_time", width=26).grid(
-        row=row_index, column=0, sticky="w", padx=(0, 10), pady=6
+    """Create the mission_time controls with subset selection and seasonal toggle."""
+    create_parameter_heading(
+        parent,
+        row_index,
+        "mission_time",
+        "TLabel",
+        TOOLTIP_TEXTS["mission_time"],
+        sticky="nw",
     )
-
-    mission_time_var = tk.StringVar(value=RANDOM_OPTION)
     seasonal_var = tk.BooleanVar(value=False)
 
-    mission_time_combo = ttk.Combobox(
+    mission_time_listbox = tk.Listbox(
         parent,
-        textvariable=mission_time_var,
-        values=MISSION_TIME_OPTIONS,
-        state="readonly",
-        width=20,
+        selectmode=tk.MULTIPLE,
+        exportselection=False,
+        height=min(len(MISSION_TIME_OPTIONS), 6),
+        width=22,
     )
-    mission_time_combo.grid(row=row_index, column=1, sticky="w")
+    mission_time_listbox.grid(row=row_index, column=1, sticky="w")
+    for option in MISSION_TIME_OPTIONS:
+        mission_time_listbox.insert(tk.END, option)
+    for index in range(mission_time_listbox.size()):
+        mission_time_listbox.selection_set(index)
+    bind_listbox_selection_behavior(mission_time_listbox)
 
     ttk.Checkbutton(
         parent,
         text="Use seasonal random",
         variable=seasonal_var,
-        command=lambda: update_mission_time_mode(seasonal_var, mission_time_combo),
+        command=lambda: update_mission_time_mode(seasonal_var, mission_time_listbox),
     ).grid(row=row_index, column=2, sticky="w", padx=(10, 0))
+    seasonal_help = ttk.Label(parent, text="[?]", style="Help.TLabel", cursor="question_arrow")
+    seasonal_help.grid(row=row_index, column=3, sticky="w")
+    ToolTip(seasonal_help, TOOLTIP_TEXTS["seasonal_mission_time"])
 
-    ttk.Label(parent, text="Winter: late morning to early afternoon", style="Muted.TLabel").grid(
-        row=row_index + 1, column=1, columnspan=2, sticky="w", pady=(0, 4)
-    )
+    create_value_box(parent, row_index, value_labels, "mission_time")
 
-    current_label = ttk.Label(parent, text="", style="Muted.TLabel", width=22)
-    current_label.grid(row=row_index, column=4, sticky="w")
-    value_labels["mission_time"] = current_label
-
-    return mission_time_var, seasonal_var
+    return mission_time_listbox, seasonal_var
 
 
 def create_mission_cloud_row(parent, row_index, value_labels):
-    """Create the mission_cloud dropdown row."""
-    ttk.Label(parent, text="mission_cloud", width=26).grid(
-        row=row_index, column=0, sticky="w", padx=(0, 10), pady=6
-    )
-
-    mission_cloud_var = tk.StringVar(value=RANDOM_OPTION)
-    mission_cloud_combo = ttk.Combobox(
+    """Create the mission_cloud subset selection row."""
+    create_parameter_heading(
         parent,
-        textvariable=mission_cloud_var,
-        values=MISSION_CLOUD_OPTIONS,
-        state="readonly",
-        width=20,
-    )
-    mission_cloud_combo.grid(row=row_index, column=1, sticky="w")
-
-    ttk.Label(parent, text="Random selects one cloud preset automatically", style="Muted.TLabel").grid(
-        row=row_index + 1, column=1, columnspan=2, sticky="w", pady=(0, 4)
+        row_index,
+        "mission_cloud",
+        "TLabel",
+        TOOLTIP_TEXTS["mission_cloud"],
+        sticky="nw",
     )
 
-    current_label = ttk.Label(parent, text="", style="Muted.TLabel", width=22)
-    current_label.grid(row=row_index, column=4, sticky="w")
-    value_labels["mission_cloud"] = current_label
+    mission_cloud_listbox = tk.Listbox(
+        parent,
+        selectmode=tk.MULTIPLE,
+        exportselection=False,
+        height=min(len(MISSION_CLOUD_OPTIONS), 6),
+        width=22,
+    )
+    mission_cloud_listbox.grid(row=row_index, column=1, sticky="w")
+    for option in MISSION_CLOUD_OPTIONS:
+        mission_cloud_listbox.insert(tk.END, option)
+    for index in range(mission_cloud_listbox.size()):
+        mission_cloud_listbox.selection_set(index)
+    bind_listbox_selection_behavior(mission_cloud_listbox)
 
-    return mission_cloud_var
+    create_value_box(parent, row_index, value_labels, "mission_cloud")
+
+    return mission_cloud_listbox
 
 
 def create_gui():
     """Build and start the Tkinter user interface."""
     root = tk.Tk()
-    root.title("Mission Config Editor")
+    root.title("EMG Avanced Random Settings Editor")
     root.resizable(True, False)
     root.minsize(1100, 0)
     create_styles(root)
@@ -603,7 +685,7 @@ def create_gui():
         text="Show current config values",
         variable=display_mode_var,
         value="show",
-        command=lambda: update_current_value_labels(display_mode_var, value_labels),
+        command=lambda: (update_current_value_labels(display_mode_var, value_labels), resize_window_to_content(root)),
     ).grid(row=0, column=0, padx=(0, 14))
 
     ttk.Radiobutton(
@@ -611,11 +693,10 @@ def create_gui():
         text="Hide current config values",
         variable=display_mode_var,
         value="hide",
-        command=lambda: update_current_value_labels(display_mode_var, value_labels),
+        command=lambda: (update_current_value_labels(display_mode_var, value_labels), resize_window_to_content(root)),
     ).grid(row=0, column=1)
 
     range_vars = {}
-    single_value_vars = {}
     value_labels = {}
 
     general_section = create_labeled_section(container, "General", 3)
@@ -624,18 +705,18 @@ def create_gui():
     allied_section = create_labeled_section(container, "Allied", 4)
     create_range_row(allied_section, 0, "lead_plane_count_allied", range_vars, value_labels)
     create_range_row(allied_section, 1, "escort_plane_count_allied", range_vars, value_labels)
-    create_single_value_row(allied_section, 2, "plane_altitude_allied", single_value_vars, value_labels)
+    create_range_row(allied_section, 2, "plane_altitude_allied", range_vars, value_labels)
 
     axis_section = create_labeled_section(container, "Axis", 5)
     create_range_row(axis_section, 0, "lead_plane_count_axis", range_vars, value_labels)
     create_range_row(axis_section, 1, "escort_plane_count_axis", range_vars, value_labels)
-    create_single_value_row(axis_section, 2, "plane_altitude_axis", single_value_vars, value_labels)
+    create_range_row(axis_section, 2, "plane_altitude_axis", range_vars, value_labels)
 
     environment_section = create_labeled_section(container, "Environment", 6)
-    mission_time_var, seasonal_mission_time_var = create_mission_time_row(
+    mission_time_listbox, seasonal_mission_time_var = create_mission_time_row(
         environment_section, 0, value_labels
     )
-    mission_cloud_var = create_mission_cloud_row(environment_section, 2, value_labels)
+    mission_cloud_listbox = create_mission_cloud_row(environment_section, 1, value_labels)
 
     button_row = ttk.Frame(container)
     button_row.grid(row=7, column=0, sticky="ew", pady=(6, 0))
@@ -647,16 +728,17 @@ def create_gui():
         style="Primary.TButton",
         command=lambda: handle_generate_and_update(
             range_vars,
-            single_value_vars,
-            mission_time_var,
-            mission_cloud_var,
+            mission_time_listbox,
+            mission_cloud_listbox,
             seasonal_mission_time_var,
             display_mode_var,
             value_labels,
+            root,
         ),
     ).grid(row=0, column=0, sticky="e")
 
     update_current_value_labels(display_mode_var, value_labels)
+    resize_window_to_content(root)
     return root
 
 
